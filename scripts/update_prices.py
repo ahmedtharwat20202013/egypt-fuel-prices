@@ -30,7 +30,6 @@ REQUIRED = {
     "gasoline_92": ("بنزين 92",),
     "gasoline_95": ("بنزين 95",),
     "diesel": ("سولار",),
-    "kerosene": ("كيروسين",),
     "cng": ("غاز تموين السيارات",),
 }
 MIN_PRICE = Decimal("1")
