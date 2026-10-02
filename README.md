@@ -1,55 +1,78 @@
 # Egypt Fuel Prices Auto Updater
 
-تحديث تلقائي لأسعار الوقود في مصر من صفحة وزارة البترول والثروة المعدنية.
+ملف بيانات عام ومحدّث آليًا لأسعار الوقود في مصر، مصدره صفحات **وزارة البترول والثروة المعدنية المصرية** فقط. يمكن لتطبيق Android قراءة `prices.json` مباشرة دون إصدار تحديث جديد للتطبيق عند تغيّر الأسعار.
 
-## المصدر الرسمي
+## الروابط
 
-https://www.petroleum.gov.eg/ar-eg/Pages/HomePage.aspx?ItemID=719
+- Repository: https://github.com/ahmedtharwat20202013/egypt-fuel-prices
+- Raw JSON: https://raw.githubusercontent.com/ahmedtharwat20202013/egypt-fuel-prices/main/prices.json
+- المصدر الأساسي: https://www.petroleum.gov.eg/ar-eg/Pages/HomePage.aspx
+- بيان الوزارة المستخدم لإثبات سعر CNG: https://www.petroleum.gov.eg/ar-eg/media-center/news/news-pages/Pages/mop_10032026_02.aspx
 
-## الملفات
+## البيانات الحالية
 
-```text
-.
-├── prices.json
-├── requirements.txt
-├── scripts/
-│   └── update_prices.py
-└── .github/
-    └── workflows/
-        └── update-prices.yml
+| المفتاح | المنتج | السعر | الوحدة |
+|---|---|---:|---|
+| `gasoline_80` | بنزين 80 | 20.75 | جنيه/لتر |
+| `gasoline_92` | بنزين 92 | 22.25 | جنيه/لتر |
+| `gasoline_95` | بنزين 95 | 24 | جنيه/لتر |
+| `diesel` | سولار | 20.5 | جنيه/لتر |
+| `kerosene` | كيروسين | 20.5 | جنيه/لتر |
+| `cng` | غاز تموين السيارات | 13 | جنيه/م³ |
+
+## Schema
+
+```json
+{
+  "country": "EG",
+  "currency": "EGP",
+  "unit": "liter",
+  "source": { "name": "Egyptian Ministry of Petroleum and Mineral Resources", "url": "..." },
+  "lastUpdated": "YYYY-MM-DD",
+  "fetchedAt": "ISO-8601",
+  "prices": {
+    "gasoline_80": 0,
+    "gasoline_92": 0,
+    "gasoline_95": 0,
+    "diesel": 0,
+    "kerosene": 0,
+    "cng": 0
+  }
+}
 ```
 
-## ماذا يحدث تلقائيًا؟
+> ملاحظة: `cng` سعره لكل متر مكعب وفق بيان الوزارة، بينما بقية المنتجات السائلة سعرها لكل لتر.
 
-GitHub Actions يعمل كل 12 ساعة، ويقوم بـ:
+## التحديث التلقائي
 
-1. تحميل صفحة وزارة البترول.
-2. استخراج بنزين 80 و92 و95 والسولار والكيروسين وغاز تموين السيارات.
-3. التحقق من وجود كل الأسعار.
-4. التحقق أن القيم أرقام وفي نطاق منطقي.
-5. رفض التحديث إذا حدث تغير مفاجئ جدًا أو تغير شكل المصدر بطريقة غير متوقعة.
-6. تعديل `prices.json` فقط عند وجود تغيير.
-7. عمل Commit تلقائي.
+GitHub Actions يعمل تلقائيًا كل 12 ساعة عند الدقيقة 17 (`17 */12 * * *`)، ويمكن تشغيله يدويًا من [صفحة Actions](https://github.com/ahmedtharwat20202013/egypt-fuel-prices/actions) عبر **Run workflow**.
 
-## تشغيل يدوي
+كل تشغيل يقوم بتحميل صفحات الوزارة، واستخراج المنتجات الستة، ثم تنفيذ Validation قبل الكتابة. يتم إنشاء Commit فقط إذا تغيّرت الأسعار.
 
-من GitHub:
+## Validation وFail-Safe
 
-Actions → Update Egypt Fuel Prices → Run workflow
+- الصفحة الرسمية يجب أن تكون متاحة وناجحة HTTP وغير فارغة.
+- المنتجات الستة إلزامية؛ غياب أي منتج أو تغيّر بنية الصفحة يؤدي إلى فشل الـWorkflow.
+- الأسعار أرقام موجبة داخل نطاق منطقي، مع دعم الأرقام العربية والإنجليزية والفواصل.
+- أي تغير يتجاوز 60% مقارنة بآخر قيمة صحيحة مرفوض ويحتاج مراجعة يدوية.
+- الكتابة تتم ذريًا ولا تتم إلا بعد نجاح جميع الفحوص.
+- عند timeout أو HTTP error أو parsing error أو validation failure، يبقى آخر `prices.json` صحيح كما هو، ويفشل الـWorkflow بدل نشر بيانات ناقصة أو مخمّنة.
 
-## استخدام الملف داخل التطبيق
+## تشغيل محلي
 
-بعد رفع الـ repository، استخدم رابط Raw لملف:
-
-```text
-https://raw.githubusercontent.com/USERNAME/REPOSITORY/main/prices.json
+```bash
+python -m pip install -r requirements.txt
+python scripts/update_prices.py
+pytest -q
 ```
 
-مثال JavaScript:
+اختبارات Fail-Safe تحاكي غياب منتج، سعرًا غير صالح، وتغيرًا يتجاوز 60% دون إفساد ملف الإنتاج.
 
-```js
+## استخدام JSON في التطبيق
+
+```javascript
 const response = await fetch(
-  "https://raw.githubusercontent.com/USERNAME/REPOSITORY/main/prices.json",
+  "https://raw.githubusercontent.com/ahmedtharwat20202013/egypt-fuel-prices/main/prices.json",
   { cache: "no-store" }
 );
 
@@ -58,12 +81,7 @@ if (!response.ok) {
 }
 
 const data = await response.json();
-
-const price92 = data.prices.gasoline_92;
+console.log(data.prices.gasoline_92);
 ```
 
-## مهم
-
-هذا المشروع لا يعتبر الأخبار أو مواقع التواصل مصدرًا للأسعار. المصدر المحدد في الكود هو موقع وزارة البترول والثروة المعدنية.
-
-لو الوزارة غيرت تصميم الصفحة، الـ workflow يفشل ولا يكتب بيانات جديدة، وده مقصود لحماية التطبيق من نشر سعر خاطئ.
+لا يعتمد المشروع على Facebook أو الأخبار أو Google snippets أو مواقع التجميع كمصدر نشر نهائي؛ أي قيمة غير قابلة للتحقق من نطاق الوزارة لا تُنشر.
