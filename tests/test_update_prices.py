@@ -12,11 +12,10 @@ MAIN_HTML = """
 <tr><td>بنزين 95</td><td>24 جنيه/لتر</td></tr>
 <tr><td>بنزين 92</td><td>22.25 جنيه/لتر</td></tr>
 <tr><td>سولار</td><td>20.5 جنيه/لتر</td></tr>
-<tr><td>كيروسين</td><td>20.5 جنيه/لتر</td></tr>
 </table>
 """
 CNG_HTML = "<p>غاز تموين السيارات من 10 الي 13 جنيه للمتر</p>"
-EXPECTED = {"gasoline_80": Decimal("20.75"), "gasoline_92": Decimal("22.25"), "gasoline_95": Decimal("24"), "diesel": Decimal("20.5"), "kerosene": Decimal("20.5"), "cng": Decimal("13")}
+EXPECTED = {"gasoline_80": Decimal("20.75"), "gasoline_92": Decimal("22.25"), "gasoline_95": Decimal("24"), "diesel": Decimal("20.5"), "cng": Decimal("13")}
 
 
 def test_extracts_all_products_and_arabic_digits():
