@@ -7,13 +7,12 @@
     "url": "https://www.petroleum.gov.eg/ar-eg/Pages/HomePage.aspx"
   },
   "lastUpdated": "2026-10-02",
-  "fetchedAt": "2026-10-02T13:38:17.421305Z",
+  "fetchedAt": "2026-10-02T13:20:00Z",
   "prices": {
-    "gasoline_80": 40,
-    "gasoline_92": 70,
-    "gasoline_95": 40,
+    "gasoline_80": 20.75,
+    "gasoline_92": 22.25,
+    "gasoline_95": 24,
     "diesel": 20.5,
-    "kerosene": 20.5,
     "cng": 13
   }
 }
