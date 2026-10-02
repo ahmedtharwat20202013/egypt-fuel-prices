@@ -1,14 +1,16 @@
-```python
+
 #!/usr/bin/env python3
+
 """
 Fetch official Egyptian fuel prices and safely update prices.json.
 
 Behavior:
-- If a fuel price exists on the official page, update it.
-- If a fuel price is missing, skip it and keep the previous value.
-- Missing individual prices do NOT stop the whole update.
-- A real source/network error still stops the script.
+- If a fuel price is found on the official page, update it.
+- If a fuel price is missing, keep the previous value.
+- Missing individual prices do NOT stop the update.
+- Network/source errors DO stop the workflow.
 - Suspicious price changes are rejected.
+- The product number (80, 92, 95) is NOT treated as the price.
 """
 
 from __future__ import annotations
@@ -24,12 +26,15 @@ import requests
 from bs4 import BeautifulSoup
 
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 SOURCE_URL = (
     "https://www.petroleum.gov.eg/ar-eg/Pages/HomePage.aspx?ItemID=719"
 )
 
 DATA_FILE = Path(__file__).resolve().parents[1] / "prices.json"
-
 
 HEADERS = {
     "User-Agent": (
@@ -39,11 +44,9 @@ HEADERS = {
     "Accept-Language": "ar,en;q=0.8",
 }
 
-
-# Arabic labels expected on the official page.
-#
-# These are NOT mandatory anymore.
-# If one is missing, the script simply skips it.
+# These labels are NOT mandatory.
+# If one is missing from the official page,
+# the previous value in prices.json will remain unchanged.
 FUEL_LABELS = {
     "gasoline_80": ["بنزين 80"],
     "gasoline_92": ["بنزين 92"],
@@ -53,34 +56,59 @@ FUEL_LABELS = {
     "cng": ["غاز تموين السيارات"],
 }
 
-
 # Conservative sanity limits.
 MIN_PRICE = Decimal("1")
 MAX_PRICE = Decimal("100")
 
+# Reject a suspiciously large change.
+MAX_CHANGE = Decimal("0.60")
+
+
+# ============================================================
+# NUMBER HELPERS
+# ============================================================
 
 def normalize_digits(value: str) -> str:
-    """Convert Arabic/Persian digits to normal ASCII digits."""
+    """
+    Convert Arabic/Persian digits to normal ASCII digits.
+    """
 
-    arabic = "٠١٢٣٤٥٦٧٨٩"
-    persian = "۰۱۲۳۴۵۶۷۸۹"
+    arabic_digits = "٠١٢٣٤٥٦٧٨٩"
+    persian_digits = "۰۱۲۳۴۵۶۷۸۹"
 
-    out = value
+    result = value
 
-    for a, b in zip(arabic, "0123456789"):
-        out = out.replace(a, b)
+    for arabic, western in zip(
+        arabic_digits,
+        "0123456789",
+    ):
+        result = result.replace(
+            arabic,
+            western,
+        )
 
-    for a, b in zip(persian, "0123456789"):
-        out = out.replace(a, b)
+    for persian, western in zip(
+        persian_digits,
+        "0123456789",
+    ):
+        result = result.replace(
+            persian,
+            western,
+        )
 
-    return out
+    return result
 
 
 def parse_number(value: str) -> Decimal:
-    """Parse a decimal number from Arabic/English text."""
+    """
+    Parse a decimal number from text.
+    """
 
     value = normalize_digits(value)
-    value = value.replace(",", ".").strip()
+    value = value.strip()
+
+    # Convert comma decimal separator to dot.
+    value = value.replace(",", ".")
 
     match = re.search(
         r"\d+(?:\.\d+)?",
@@ -89,24 +117,32 @@ def parse_number(value: str) -> Decimal:
 
     if not match:
         raise ValueError(
-            f"Could not parse price from: {value!r}"
+            f"Could not parse number from: {value!r}"
         )
 
     try:
-        return Decimal(match.group(0))
+        return Decimal(
+            match.group(0)
+        )
 
     except InvalidOperation as exc:
         raise ValueError(
-            f"Invalid price: {value!r}"
+            f"Invalid number: {value!r}"
         ) from exc
 
 
-def fetch_html() -> str:
-    """Download the official page."""
+# ============================================================
+# FETCH OFFICIAL PAGE
+# ============================================================
 
-    print("========================================")
+def fetch_html() -> str:
+    """
+    Download the official Ministry of Petroleum page.
+    """
+
+    print("=" * 60)
     print("Fetching official Egypt fuel prices...")
-    print("========================================")
+    print("=" * 60)
 
     response = requests.get(
         SOURCE_URL,
@@ -116,103 +152,138 @@ def fetch_html() -> str:
 
     response.raise_for_status()
 
-    if len(response.text) < 10_000:
+    html = response.text
+
+    if len(html) < 10_000:
         raise RuntimeError(
             "Official page response is unexpectedly small."
         )
 
     print(
-        f"✅ Official page downloaded successfully "
-        f"({len(response.text):,} characters)"
+        f"SUCCESS: official page downloaded "
+        f"({len(html):,} characters)"
     )
 
-    return response.text
+    return html
 
 
-def find_price_in_row(
-    row_text: str,
-    labels: list[str],
-) -> Decimal | None:
-    """
-    Try to find a valid price inside a table row.
-    """
+# ============================================================
+# PRICE EXTRACTION
+# ============================================================
 
-    if not any(label in row_text for label in labels):
-        return None
-
-    numbers = re.findall(
-        r"[٠-٩۰-۹0-9]+(?:[.,][٠-٩۰-۹0-9]+)?",
-        row_text,
-    )
-
-    candidates: list[Decimal] = []
-
-    for raw in numbers:
-        try:
-            number = parse_number(raw)
-
-        except ValueError:
-            continue
-
-        if MIN_PRICE <= number <= MAX_PRICE:
-            candidates.append(number)
-
-    if not candidates:
-        return None
-
-    # The first valid number is considered the price.
-    return candidates[0]
-
-
-def find_price_in_text(
+def extract_price_after_label(
     text: str,
     labels: list[str],
 ) -> Decimal | None:
     """
-    Fallback search in the full visible page text.
+    Find a fuel label and then search ONLY after the label.
+
+    This prevents:
+        بنزين 80  -> 80
+
+    from being interpreted as the price.
+
+    Example:
+        بنزين 80 15.75
+        ^ label  ^ price
     """
 
-    for label in labels:
-        index = text.find(label)
+    normalized_text = normalize_digits(text)
 
-        if index < 0:
+    for label in labels:
+
+        normalized_label = normalize_digits(label)
+
+        position = normalized_text.find(
+            normalized_label
+        )
+
+        if position < 0:
             continue
 
-        window = text[index:index + 180]
+        # Everything AFTER the product name.
+        after_label = normalized_text[
+            position + len(normalized_label):
+        ]
 
+        # Only inspect a reasonable window.
+        window = after_label[:200]
+
+        # Find numbers after the label.
         numbers = re.findall(
-            r"[٠-٩۰-۹0-9]+(?:[.,][٠-٩۰-۹0-9]+)?",
+            r"\d+(?:[.,]\d+)?",
             window,
         )
 
-        candidates: list[Decimal] = []
+        for raw_number in numbers:
 
-        for raw in numbers:
             try:
-                number = parse_number(raw)
+                number = parse_number(
+                    raw_number
+                )
 
             except ValueError:
                 continue
 
-            if MIN_PRICE <= number <= MAX_PRICE:
-                candidates.append(number)
-
-        if candidates:
-            return candidates[0]
+            if (
+                MIN_PRICE
+                <= number
+                <= MAX_PRICE
+            ):
+                return number
 
     return None
+
+
+def extract_price_from_row(
+    row_text: str,
+    labels: list[str],
+) -> Decimal | None:
+    """
+    Extract a price from one table row.
+
+    Only numbers AFTER the product label are considered.
+    """
+
+    for label in labels:
+
+        if label not in row_text:
+            continue
+
+        price = extract_price_after_label(
+            row_text,
+            [label],
+        )
+
+        if price is not None:
+            return price
+
+    return None
+
+
+def extract_price_from_full_text(
+    text: str,
+    labels: list[str],
+) -> Decimal | None:
+    """
+    Fallback extraction from the complete visible page text.
+    """
+
+    return extract_price_after_label(
+        text,
+        labels,
+    )
 
 
 def extract_prices(
     html: str,
 ) -> tuple[dict[str, Decimal], list[str]]:
     """
-    Extract all available prices.
-
-    Missing prices are skipped instead of raising an error.
+    Extract all available fuel prices.
 
     Returns:
-        (found_prices, skipped_keys)
+        found_prices
+        skipped_keys
     """
 
     soup = BeautifulSoup(
@@ -220,36 +291,51 @@ def extract_prices(
         "html.parser",
     )
 
+    # --------------------------------------------------------
+    # Get table rows
+    # --------------------------------------------------------
+
     rows = soup.find_all("tr")
 
     row_texts = [
-        " ".join(row.stripped_strings)
+        " ".join(
+            row.stripped_strings
+        )
         for row in rows
     ]
+
+    # --------------------------------------------------------
+    # Get visible page text
+    # --------------------------------------------------------
 
     visible_text = " ".join(
         soup.stripped_strings
     )
 
-    result: dict[str, Decimal] = {}
+    found_prices: dict[str, Decimal] = {}
+
     skipped: list[str] = []
 
     print("")
-    print("========================================")
+    print("=" * 60)
     print("Searching for fuel prices...")
-    print("========================================")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Search every fuel type
+    # --------------------------------------------------------
 
     for key, labels in FUEL_LABELS.items():
 
         price: Decimal | None = None
 
-        # ------------------------------------
-        # First: search table rows
-        # ------------------------------------
+        # ----------------------------------------------------
+        # 1. Search table rows first
+        # ----------------------------------------------------
 
         for row_text in row_texts:
 
-            price = find_price_in_row(
+            price = extract_price_from_row(
                 row_text,
                 labels,
             )
@@ -257,51 +343,59 @@ def extract_prices(
             if price is not None:
                 break
 
-        # ------------------------------------
-        # Second: fallback full-text search
-        # ------------------------------------
+        # ----------------------------------------------------
+        # 2. Fallback to complete visible text
+        # ----------------------------------------------------
 
         if price is None:
 
-            price = find_price_in_text(
+            price = extract_price_from_full_text(
                 visible_text,
                 labels,
             )
 
-        # ------------------------------------
-        # Result
-        # ------------------------------------
+        # ----------------------------------------------------
+        # 3. Found
+        # ----------------------------------------------------
 
-        if price is None:
+        if price is not None:
+
+            found_prices[key] = price
+
+            print(
+                f"FOUND   {key:<15} = {price}"
+            )
+
+        # ----------------------------------------------------
+        # 4. Missing
+        # ----------------------------------------------------
+
+        else:
 
             skipped.append(key)
 
             print(
-                f"⚠️ {key}: price not found "
-                f"-> SKIPPED"
+                f"SKIPPED {key:<15} "
+                f"= price not found"
             )
 
-            continue
-
-        result[key] = price
-
-        print(
-            f"✅ {key}: {price}"
-        )
-
-    return result, skipped
+    return found_prices, skipped
 
 
-def validate(
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def validate_prices(
     new_prices: dict[str, Decimal],
     old_prices: dict,
 ) -> None:
     """
     Validate only prices that were actually found.
-
-    Missing prices are allowed.
     """
 
+    # If absolutely nothing was found,
+    # something is probably wrong with the source.
     if not new_prices:
 
         raise RuntimeError(
@@ -309,9 +403,13 @@ def validate(
         )
 
     print("")
-    print("========================================")
-    print("Validating prices...")
-    print("========================================")
+    print("=" * 60)
+    print("Validating extracted prices...")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Range validation
+    # --------------------------------------------------------
 
     for key, value in new_prices.items():
 
@@ -323,40 +421,46 @@ def validate(
 
             raise RuntimeError(
                 f"Validation failed: "
-                f"{key}={value} is out of range."
+                f"{key}={value} is outside "
+                f"the allowed range."
             )
 
         print(
-            f"✅ {key}: {value} "
-            f"is within valid range"
+            f"VALID   {key:<15} = {value}"
         )
 
-    # ------------------------------------
-    # Detect suspicious price changes
-    # ------------------------------------
+    # --------------------------------------------------------
+    # Change validation
+    # --------------------------------------------------------
+
+    print("")
+    print("Checking for suspicious price changes...")
 
     for key, new_value in new_prices.items():
 
         old_raw = old_prices.get(key)
 
-        # New price with no previous value.
+        # No previous value.
         if old_raw is None:
+            print(
+                f"NEW     {key:<15} = {new_value}"
+            )
             continue
 
         try:
+
             old_value = Decimal(
                 str(old_raw)
             )
 
-        except InvalidOperation:
+        except InvalidOperation as exc:
 
             raise RuntimeError(
-                f"Validation failed: "
-                f"invalid old price for {key}: "
-                f"{old_raw!r}"
-            )
+                f"Invalid old price for "
+                f"{key}: {old_raw!r}"
+            ) from exc
 
-        if old_value == 0:
+        if old_value <= 0:
             continue
 
         change = (
@@ -364,20 +468,31 @@ def validate(
             / old_value
         )
 
-        if change > Decimal("0.60"):
+        percentage = change * Decimal("100")
+
+        print(
+            f"CHANGE  {key:<15} "
+            f"{old_value} -> {new_value} "
+            f"({percentage:.2f}%)"
+        )
+
+        if change > MAX_CHANGE:
 
             raise RuntimeError(
                 f"Validation failed: "
                 f"{key} changed by more than 60% "
                 f"({old_value} -> {new_value}). "
-                "Manual review required."
+                f"Manual review required."
             )
 
+
+# ============================================================
+# UPDATE JSON
+# ============================================================
 
 def update_prices_json(
     old_data: dict,
     new_prices: dict[str, Decimal],
-    skipped: list[str],
 ) -> dict:
     """
     Merge new prices with old prices.
@@ -387,19 +502,35 @@ def update_prices_json(
     """
 
     old_prices = dict(
-        old_data.get("prices", {})
+        old_data.get(
+            "prices",
+            {},
+        )
     )
 
-    # Update only prices that were successfully found.
+    # --------------------------------------------------------
+    # Update ONLY prices that were found.
+    # --------------------------------------------------------
+
     for key, value in new_prices.items():
 
-        old_prices[key] = float(value)
+        old_prices[key] = float(
+            value
+        )
+
+    # --------------------------------------------------------
+    # Timestamp
+    # --------------------------------------------------------
 
     now = datetime.now(
         timezone.utc
     ).isoformat(
         timespec="seconds"
     )
+
+    # --------------------------------------------------------
+    # Metadata
+    # --------------------------------------------------------
 
     old_data["source"] = {
         "name": (
@@ -417,25 +548,32 @@ def update_prices_json(
 
     old_data["lastUpdated"] = now[:10]
 
-    # IMPORTANT:
-    # Keep old prices for anything that was not found.
+    # --------------------------------------------------------
+    # Final prices
+    # --------------------------------------------------------
+
     old_data["prices"] = old_prices
 
     return old_data
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main() -> int:
 
     try:
 
-        # ====================================
-        # 1. Read existing prices.json
-        # ====================================
+        # ====================================================
+        # 1. Check prices.json
+        # ====================================================
 
         if not DATA_FILE.exists():
 
             raise RuntimeError(
-                f"Data file not found: {DATA_FILE}"
+                f"prices.json not found: "
+                f"{DATA_FILE}"
             )
 
         old_data = json.loads(
@@ -447,43 +585,59 @@ def main() -> int:
         if "prices" not in old_data:
 
             raise RuntimeError(
-                "prices.json does not contain a 'prices' object."
+                "prices.json does not contain "
+                "a 'prices' object."
             )
 
         old_prices = old_data["prices"]
 
-        # ====================================
-        # 2. Download official page
-        # ====================================
+        print("=" * 60)
+        print("Existing prices:")
+        print("=" * 60)
+
+        print(
+            json.dumps(
+                old_prices,
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+        # ====================================================
+        # 2. Download official source
+        # ====================================================
 
         html = fetch_html()
 
-        # ====================================
+        # ====================================================
         # 3. Extract prices
-        # ====================================
+        # ====================================================
 
         new_prices, skipped = extract_prices(
             html
         )
 
-        # ====================================
-        # 4. Validate found prices
-        # ====================================
+        # ====================================================
+        # 4. Validate
+        # ====================================================
 
-        validate(
+        validate_prices(
             new_prices,
             old_prices,
         )
 
-        # ====================================
-        # 5. Update prices.json
-        # ====================================
+        # ====================================================
+        # 5. Merge with old data
+        # ====================================================
 
         updated_data = update_prices_json(
             old_data,
             new_prices,
-            skipped,
         )
+
+        # ====================================================
+        # 6. Write prices.json
+        # ====================================================
 
         DATA_FILE.write_text(
             json.dumps(
@@ -495,28 +649,49 @@ def main() -> int:
             encoding="utf-8",
         )
 
-        # ====================================
-        # 6. Print final report
-        # ====================================
+        # ====================================================
+        # 7. Report
+        # ====================================================
 
         print("")
-        print("========================================")
-        print("UPDATE COMPLETED")
-        print("========================================")
+        print("=" * 60)
+        print("UPDATE COMPLETED SUCCESSFULLY")
+        print("=" * 60)
 
         print("")
         print("Updated prices:")
 
         for key, value in new_prices.items():
 
-            print(
-                f"  ✅ {key}: {value}"
+            old_value = old_prices.get(
+                key
             )
+
+            if old_value is None:
+
+                print(
+                    f"  NEW  {key}: "
+                    f"{value}"
+                )
+
+            else:
+
+                print(
+                    f"  OK   {key}: "
+                    f"{old_value} -> {value}"
+                )
+
+        # ----------------------------------------------------
+        # Skipped prices
+        # ----------------------------------------------------
 
         if skipped:
 
             print("")
-            print("Skipped prices:")
+            print(
+                "Prices not found "
+                "(old values kept):"
+            )
 
             for key in skipped:
 
@@ -526,13 +701,18 @@ def main() -> int:
                 )
 
                 print(
-                    f"  ⚠️ {key}: "
-                    f"not found -> keeping old value "
-                    f"({old_value})"
+                    f"  KEEP {key}: "
+                    f"{old_value}"
                 )
 
+        # ----------------------------------------------------
+        # Final JSON
+        # ----------------------------------------------------
+
         print("")
+        print("=" * 60)
         print("Final prices.json values:")
+        print("=" * 60)
 
         print(
             json.dumps(
@@ -544,30 +724,78 @@ def main() -> int:
 
         print("")
         print(
-            "SUCCESS: prices.json updated successfully."
+            "SUCCESS: prices.json "
+            "has been updated."
         )
 
         return 0
 
+    # ========================================================
+    # NETWORK ERROR
+    # ========================================================
+
     except requests.RequestException as exc:
 
         print(
-            f"ERROR: Failed to download official page: "
-            f"{exc}",
+            "",
+            file=sys.stderr,
+        )
+
+        print(
+            "=" * 60,
+            file=sys.stderr,
+        )
+
+        print(
+            "ERROR: Could not download "
+            "the official page.",
+            file=sys.stderr,
+        )
+
+        print(
+            str(exc),
+            file=sys.stderr,
+        )
+
+        print(
+            "=" * 60,
             file=sys.stderr,
         )
 
         return 1
 
+    # ========================================================
+    # OTHER ERROR
+    # ========================================================
+
     except Exception as exc:
+
+        print(
+            "",
+            file=sys.stderr,
+        )
+
+        print(
+            "=" * 60,
+            file=sys.stderr,
+        )
 
         print(
             f"ERROR: {exc}",
             file=sys.stderr,
         )
 
+        print(
+            "=" * 60,
+            file=sys.stderr,
+        )
+
         return 1
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     sys.exit(main())
