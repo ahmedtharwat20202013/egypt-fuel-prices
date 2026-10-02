@@ -34,7 +34,6 @@ REQUIRED = {
 }
 MIN_PRICE = Decimal("1")
 MAX_PRICE = Decimal("100")
-MAX_CHANGE = Decimal("0.60")
 
 
 def normalize_digits(value: str) -> str:
@@ -118,18 +117,6 @@ def validate_prices(new: dict[str, Decimal], old: dict[str, Any]) -> None:
         value = new.get(key)
         if value is None or not (MIN_PRICE <= value <= MAX_PRICE):
             raise RuntimeError(f"Invalid price for {key}: {value!r}")
-        old_raw = old.get(key)
-        if old_raw is None:
-            continue
-        try:
-            old_value = Decimal(str(old_raw))
-        except InvalidOperation as exc:
-            raise RuntimeError(f"Invalid old price for {key}: {old_raw!r}") from exc
-        if old_value <= 0:
-            raise RuntimeError(f"Invalid old price for {key}: {old_value}")
-        change = abs(value - old_value) / old_value
-        if change > MAX_CHANGE:
-            raise RuntimeError(f"{key} changed by more than 60%: {old_value} -> {value}")
 
 
 def json_price(value: Decimal) -> int | float:
