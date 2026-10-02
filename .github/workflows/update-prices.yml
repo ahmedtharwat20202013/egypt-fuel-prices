@@ -2,8 +2,10 @@ name: Update Egypt Fuel Prices
 
 on:
   schedule:
-    # Every 12 hours. GitHub may delay scheduled jobs by a few minutes.
+    # Run every 12 hours
     - cron: "17 */12 * * *"
+
+  # Allow manual execution from GitHub Actions
   workflow_dispatch:
 
 permissions:
@@ -14,35 +16,107 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ==============================
+      # 1. Checkout repository
+      # ==============================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ==============================
+      # 2. Setup Python
+      # ==============================
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
+      # ==============================
+      # 3. Install dependencies
+      # ==============================
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
+      # ==============================
+      # 4. Fetch prices
+      # ==============================
+      #
+      # لو سعر معين مش موجود في الموقع،
+      # السكريبت المفروض يتخطاه ويكمل.
+      #
+      # continue-on-error يمنع توقف الـ Workflow
+      # لو السكريبت رجع Exit Code غير 0.
+      #
       - name: Fetch and validate official prices
-        run: python scripts/update_prices.py
+        run: |
+          echo "========================================"
+          echo "Fetching Egypt fuel prices..."
+          echo "========================================"
 
+          python scripts/update_prices.py || {
+            echo ""
+            echo "⚠️ The price updater returned an error."
+            echo "⚠️ Continuing with the existing prices.json."
+            echo ""
+          }
+
+      # ==============================
+      # 5. Show current prices.json
+      # ==============================
+      - name: Show generated prices
+        run: |
+          echo "========================================"
+          echo "Current prices.json:"
+          echo "========================================"
+
+          if [ -f prices.json ]; then
+            cat prices.json
+          else
+            echo "❌ prices.json was not found!"
+            exit 1
+          fi
+
+      # ==============================
+      # 6. Check if prices.json changed
+      # ==============================
       - name: Check whether prices.json changed
         id: changes
         run: |
           if git diff --quiet -- prices.json; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ No price changes detected."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Price changes detected."
+            echo ""
+            echo "Changes:"
+            git diff -- prices.json
           fi
 
+      # ==============================
+      # 7. Commit updated prices
+      # ==============================
       - name: Commit updated prices
         if: steps.changes.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add prices.json
+
           git commit -m "chore: update official Egypt fuel prices"
+
           git push
+
+      # ==============================
+      # 8. No changes
+      # ==============================
+      - name: No changes detected
+        if: steps.changes.outputs.changed == 'false'
+        run: |
+          echo "========================================"
+          echo "No changes were made."
+          echo "prices.json is already up to date."
+          echo "========================================"
