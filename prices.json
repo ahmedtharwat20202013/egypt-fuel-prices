@@ -1,0 +1,19 @@
+{
+  "country": "EG",
+  "currency": "EGP",
+  "unit": "liter",
+  "source": {
+    "name": "Egyptian Ministry of Petroleum and Mineral Resources",
+    "url": "https://www.petroleum.gov.eg/ar-eg/Pages/HomePage.aspx?ItemID=719"
+  },
+  "lastUpdated": "2026-10-02",
+  "fetchedAt": null,
+  "prices": {
+    "gasoline_80": 20.75,
+    "gasoline_92": 22.25,
+    "gasoline_95": 24.0,
+    "diesel": 20.5,
+    "kerosene": 20.5,
+    "cng": 13.0
+  }
+}
