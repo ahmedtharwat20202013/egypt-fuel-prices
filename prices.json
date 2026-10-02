@@ -9,9 +9,9 @@
   "lastUpdated": "2026-10-02",
   "fetchedAt": null,
   "prices": {
-    "gasoline_80": 20.75,
-    "gasoline_92": 22.25,
-    "gasoline_95": 24.0,
+    "gasoline_80": 50,
+    "gasoline_92": 205,
+    "gasoline_95": 40,
     "diesel": 20.5,
     "kerosene": 20.5,
     "cng": 13.0
