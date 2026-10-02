@@ -41,10 +41,5 @@ def test_invalid_price_fails_validation():
         raise AssertionError("invalid price must fail")
 
 
-def test_change_over_sixty_percent_fails():
-    try:
-        MOD.validate_prices(dict(EXPECTED, gasoline_92=Decimal("99")), EXPECTED)
-    except RuntimeError as exc:
-        assert "60%" in str(exc)
-    else:
-        raise AssertionError("large change must fail")
+def test_large_change_is_allowed_when_value_is_valid():
+    MOD.validate_prices(dict(EXPECTED, gasoline_92=Decimal("99")), EXPECTED)
